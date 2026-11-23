@@ -577,6 +577,45 @@ describe('image repo D22 / slot cache', () => {
         }
     });
 
+    it('未指定上限时默认只保留 20 个 objectURL', async () => {
+        const db = createMemoryIdb();
+        const images = createImageRepo({ db });
+        const blob = new Blob(['x']);
+        const ids = Array.from({ length: 21 }, (_, i) => `img${String(i).padStart(2, '0')}`);
+        for (const id of ids) {
+            await db.put(IDB_STORES.IMAGES, { id, blob, createdAt: id, pinned: false });
+        }
+        const originalURL = globalThis.URL;
+        /** @type {Set<string>} */
+        const live = new Set();
+        /** @type {string[]} */
+        const revoked = [];
+        let seq = 0;
+        globalThis.URL = {
+            createObjectURL: () => {
+                const url = `blob:${++seq}`;
+                live.add(url);
+                return url;
+            },
+            revokeObjectURL: (url) => {
+                live.delete(url);
+                revoked.push(url);
+            },
+        };
+        try {
+            /** @type {string[]} */
+            const urls = [];
+            for (const id of ids) {
+                urls.push((await images.getUrl(id)).value);
+                assert.ok(live.size <= 20, `存活 URL 不得超过 20，当前 ${live.size}`);
+            }
+            assert.deepEqual(revoked, [urls[0]], '第 21 张入库时撤销最早的那张');
+            assert.equal(live.size, 20);
+        } finally {
+            globalThis.URL = originalURL;
+        }
+    });
+
     it('releaseUrl 只撤销 objectURL，不删 blob', async () => {
         const db = createMemoryIdb();
         const images = createImageRepo({ db });

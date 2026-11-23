@@ -27,8 +27,10 @@ function formatBytes(bytes) {
 /**
  * 图库每页最多渲染的张数。一张未压缩位图约 4MB（832×1216 RGBA），
  * 全部挂到 DOM 会瞬间吃光内存，所以分页 + 翻页即释放，保证同时存活 ≤ 该值。
+ * 注意：该值必须 ≤ image.repo 的 objectURL LRU 上限（默认 20），
+ * 否则同一页靠后的图片刚挂上就会被 LRU 撤销，缩略图会变空白。
  */
-const GALLERY_PAGE_SIZE = 30;
+const GALLERY_PAGE_SIZE = 20;
 
 /**
  * @param {Element} root
@@ -78,7 +80,7 @@ export function mountStoragePanel(root, deps) {
     const cacheHint = el('p', 'nd-muted');
     setText(
         cacheHint,
-        '楼层出的图保存在本机浏览器。启动时按上限从最旧的开始裁剪；手动清理只清空图片缓存，不受上限限制。图库每页最多显示 30 张，翻页会释放上一页图片内存。仅影响图片与对应楼层图片索引，角色卡、标签、预设、画师、LLM/NAI 配置等其他数据均保留；受保护图片和画师图库默认也保留。',
+        '楼层出的图保存在本机浏览器。启动时按上限从最旧的开始裁剪；手动清理只清空图片缓存，不受上限限制。图库每页最多显示 20 张，翻页会释放上一页图片内存。仅影响图片与对应楼层图片索引，角色卡、标签、预设、画师、LLM/NAI 配置等其他数据均保留；受保护图片和画师图库默认也保留。',
     );
     const statsEl = el('p', 'nd-storage-stats');
     setText(statsEl, '当前：—');

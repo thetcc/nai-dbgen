@@ -45,12 +45,12 @@ export function collectLiveRefsFromRecords(records) {
  * 展示用 objectURL 缓存上限。超出后自动撤销最久未用的 URL（LRU），
  * 防止长会话 / 大图库把解码后的位图全留在内存里。
  */
-const DEFAULT_MAX_CACHED_URLS = 30;
+const DEFAULT_MAX_CACHED_URLS = 20;
 
 /**
  * @param {object} deps
  * @param {object} deps.db openIdb 返回值
- * @param {number} [deps.maxCachedUrls] 展示 URL 缓存上限，默认 30
+ * @param {number} [deps.maxCachedUrls] 展示 URL 缓存上限，默认 20
  * @returns {import('../../ports/repository.port.js').ImageRepository & {
  *   linkSlot: (sessionId: string, slotId: number, imageRef: string) => Promise<import('../../infra/result.js').Ok<void>|import('../../infra/result.js').Err<import('../../infra/errors.js').AppError>>,
  *   clearSlot: (sessionId: string, slotId: number) => Promise<import('../../infra/result.js').Ok<void>|import('../../infra/result.js').Err<import('../../infra/errors.js').AppError>>,

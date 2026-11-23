@@ -231,7 +231,7 @@ describe('storage-panel image cache', () => {
         handle.destroy();
     });
 
-    it('图库每页最多 30 张，翻页释放上一页 URL', async () => {
+    it('图库每页最多 20 张，翻页释放上一页 URL', async () => {
         const root = document.createElement('div');
         document.body.appendChild(root);
         const total = 45;
@@ -259,17 +259,24 @@ describe('storage-panel image cache', () => {
         });
         await new Promise((r) => setTimeout(r, 10));
 
-        assert.equal(findAllByClass(root, 'nd-cache-card').length, 30, '首屏最多渲染 30 张');
+        assert.equal(findAllByClass(root, 'nd-cache-card').length, 20, '首屏最多渲染 20 张');
         const pagerInfo = findAllByClass(root, 'nd-cache-pager')[0]?.querySelector('span');
-        assert.match(String(pagerInfo.textContent || ''), /第 1 \/ 2 页/);
+        assert.match(String(pagerInfo.textContent || ''), /第 1 \/ 3 页/);
 
         const next = findButtons(root).find((b) => String(b.textContent || '') === '下一页');
         click(next);
         await new Promise((r) => setTimeout(r, 10));
 
-        assert.equal(findAllByClass(root, 'nd-cache-card').length, 15, '第二页只剩 15 张');
-        assert.equal(released.length, 30, '翻页时释放上一页 30 个 URL');
-        assert.match(String(pagerInfo.textContent || ''), /第 2 \/ 2 页/);
+        assert.equal(findAllByClass(root, 'nd-cache-card').length, 20, '第二页 20 张');
+        assert.equal(released.length, 20, '翻页时释放上一页 20 个 URL');
+        assert.match(String(pagerInfo.textContent || ''), /第 2 \/ 3 页/);
+
+        click(next);
+        await new Promise((r) => setTimeout(r, 10));
+
+        assert.equal(findAllByClass(root, 'nd-cache-card').length, 5, '最后一页只剩 5 张');
+        assert.equal(released.length, 40, '再次翻页释放第二页 20 个 URL');
+        assert.match(String(pagerInfo.textContent || ''), /第 3 \/ 3 页/);
         assert.equal(next.disabled, true);
 
         handle.destroy();
