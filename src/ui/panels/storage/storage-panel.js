@@ -72,7 +72,7 @@ export function mountStoragePanel(root, deps) {
     const cacheHint = el('p', 'nd-muted');
     setText(
         cacheHint,
-        '楼层出的图保存在本机浏览器。启动时按上限从最旧的开始裁剪；手动清理会删除所有可清理图片，不受上限限制。保留受保护图片和画师图库，不影响服务器上的生图记录。',
+        '楼层出的图保存在本机浏览器。启动时按上限从最旧的开始裁剪；手动清理只清空图片缓存，不受上限限制。仅影响图片与对应楼层图片索引，角色卡、标签、预设、画师、LLM/NAI 配置等其他数据均保留；受保护图片和画师图库也保留。',
     );
     const statsEl = el('p', 'nd-storage-stats');
     setText(statsEl, '当前：—');
@@ -351,7 +351,7 @@ export function mountStoragePanel(root, deps) {
         try {
             const confirmed = await confirmDanger(
                 deps,
-                '将删除所有可清理的本地图片缓存，不受缓存上限限制。受保护图片和画师图库会保留，服务器生图记录不受影响。此操作不可撤销，确定继续？',
+                '仅清空图片缓存（图片及指向它们的楼层图片索引），不受缓存上限限制。角色卡、标签、预设、画师、LLM/NAI 配置等其他数据，以及受保护图片和画师图库均保留；服务器生图记录不受影响。此操作不可撤销，确定继续？',
             );
             if (!confirmed || destroyed) {
                 return;
