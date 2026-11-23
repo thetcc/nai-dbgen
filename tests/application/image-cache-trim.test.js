@@ -136,13 +136,49 @@ describe('image-cache-trim.service', () => {
         assert.deepEqual(seen, [[7]]);
     });
 
+    it('手动清空透传 keep 与 includeProtected，并把它们带回结果', async () => {
+        /** @type {any[]} */
+        const seen = [];
+        const events = [];
+        const svc = createImageCacheTrimService({
+            loadSettings: () => ({ imageCacheLimit: 500 }),
+            imageRepo: { trimToLimit: async (limit, opts) => {
+                seen.push([limit, opts]);
+                return { ok: true, value: { removed: 3, removedRefs: ['a', 'b', 'c'], keep: opts.keep } };
+            } },
+            bus: { emit: (type, payload) => events.push(payload) },
+        });
+        const r = await svc.trim({ clearAll: true, keep: 5, includeProtected: true });
+        assert.deepEqual(seen, [[0, { clearAll: true, keep: 5, includeProtected: true }]]);
+        assert.equal(r.value.keep, 5);
+        assert.equal(r.value.includeProtected, true);
+        assert.equal(r.value.removed, 3);
+        assert.deepEqual(events, [r.value]);
+    });
+
+    it('非法 keep 归零，避免误保留或误删', async () => {
+        /** @type {any[]} */
+        const seen = [];
+        const svc = createImageCacheTrimService({
+            loadSettings: () => ({ imageCacheLimit: 500 }),
+            imageRepo: { trimToLimit: async (limit, opts) => {
+                seen.push(opts);
+                return { ok: true, value: { removed: 0, removedRefs: [] } };
+            } },
+        });
+        await svc.trim({ clearAll: true, keep: -3 });
+        await svc.trim({ clearAll: true, keep: 2.5 });
+        await svc.trim({ clearAll: true, keep: Number.NaN });
+        assert.deepEqual(seen.map((o) => o.keep), [0, 0, 0]);
+    });
+
     it('手动清空透传仓库错误且不发事件', async () => {
         const events = [];
         const svc = createImageCacheTrimService({
             loadSettings: () => ({ imageCacheLimit: 500 }),
             imageRepo: { trimToLimit: async (limit, opts) => {
                 assert.equal(limit, 0);
-                assert.deepEqual(opts, { clearAll: true });
+                assert.deepEqual(opts, { clearAll: true, keep: 0, includeProtected: false });
                 return { ok: false, error: { code: 'X', message: '失败', category: 'storage' } };
             } },
             bus: { emit: (...args) => events.push(args) },

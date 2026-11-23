@@ -42,15 +42,23 @@ export function collectLiveRefsFromRecords(records) {
 }
 
 /**
+ * 展示用 objectURL 缓存上限。超出后自动撤销最久未用的 URL（LRU），
+ * 防止长会话 / 大图库把解码后的位图全留在内存里。
+ */
+const DEFAULT_MAX_CACHED_URLS = 30;
+
+/**
  * @param {object} deps
  * @param {object} deps.db openIdb 返回值
+ * @param {number} [deps.maxCachedUrls] 展示 URL 缓存上限，默认 30
  * @returns {import('../../ports/repository.port.js').ImageRepository & {
  *   linkSlot: (sessionId: string, slotId: number, imageRef: string) => Promise<import('../../infra/result.js').Ok<void>|import('../../infra/result.js').Err<import('../../infra/errors.js').AppError>>,
  *   clearSlot: (sessionId: string, slotId: number) => Promise<import('../../infra/result.js').Ok<void>|import('../../infra/result.js').Err<import('../../infra/errors.js').AppError>>,
  *   getSlotImageRef: (sessionId: string, slotId: number) => Promise<import('../../infra/result.js').Ok<string|null>|import('../../infra/result.js').Err<import('../../infra/errors.js').AppError>>,
  *   listCacheRefs: (sessionId?: string|null) => Promise<import('../../infra/result.js').Ok<string[]>|import('../../infra/result.js').Err<import('../../infra/errors.js').AppError>>,
  *   collectLiveRefs: (records: Iterable<object>, sessionId?: string|null) => Promise<import('../../infra/result.js').Ok<string[]>|import('../../infra/result.js').Err<import('../../infra/errors.js').AppError>>,
- *   trimToLimit: (limit: number, opts?: { clearAll?: boolean }) => Promise<import('../../infra/result.js').Ok<{ removed: number, removedRefs: string[] }>|import('../../infra/result.js').Err<import('../../infra/errors.js').AppError>>,
+ *   trimToLimit: (limit: number, opts?: { clearAll?: boolean, keep?: number, includeProtected?: boolean }) => Promise<import('../../infra/result.js').Ok<{ removed: number, removedRefs: string[] }>|import('../../infra/result.js').Err<import('../../infra/errors.js').AppError>>,
+ *   releaseUrl: (ref: string) => void,
  * }}
  */
 export function createImageRepo(deps) {
@@ -59,8 +67,11 @@ export function createImageRepo(deps) {
         throw new Error('createImageRepo requires deps.db');
     }
 
-    /** @type {Map<string, { url: string, stamp: string }>} imageRef → 当前 blob 的 objectURL */
+    /** @type {Map<string, { url: string, stamp: string }>} imageRef → 当前 blob 的 objectURL（LRU 有序） */
     const urlCache = new Map();
+    const maxCachedUrls = Number.isInteger(deps?.maxCachedUrls) && deps.maxCachedUrls > 0
+        ? deps.maxCachedUrls
+        : DEFAULT_MAX_CACHED_URLS;
 
     /**
      * @param {unknown} err
@@ -86,6 +97,27 @@ export function createImageRepo(deps) {
             }
         }
         urlCache.delete(ref);
+    }
+
+    /** 命中时把条目移到队尾，维持 LRU 顺序。 */
+    function touchCached(ref) {
+        const cached = urlCache.get(ref);
+        if (!cached) {
+            return;
+        }
+        urlCache.delete(ref);
+        urlCache.set(ref, cached);
+    }
+
+    /** 超出上限时从最久未用的开始撤销，保证同时存活的 objectURL ≤ maxCachedUrls。 */
+    function evictOverflow() {
+        while (urlCache.size > maxCachedUrls) {
+            const oldest = urlCache.keys().next();
+            if (oldest.done) {
+                return;
+            }
+            revokeCached(oldest.value);
+        }
     }
 
     const repo = {
@@ -158,6 +190,7 @@ export function createImageRepo(deps) {
                 const stamp = row.createdAt != null ? String(row.createdAt) : '';
                 const cached = urlCache.get(key);
                 if (cached && cached.stamp === stamp) {
+                    touchCached(key);
                     return cached.url;
                 }
                 revokeCached(key);
@@ -166,6 +199,7 @@ export function createImageRepo(deps) {
                 }
                 const url = URL.createObjectURL(row.blob);
                 urlCache.set(key, { url, stamp });
+                evictOverflow();
                 return url;
             }, mapErr, Ok, Err);
         },
@@ -375,15 +409,21 @@ export function createImageRepo(deps) {
         },
 
         /**
-         * 按张数上限裁剪公共图片；clearAll 时清空可清理图片，始终保护 pinned 和画师图库。
+         * 按张数上限裁剪公共图片；clearAll 时清空可清理图片。
+         * - 默认保护 pinned 与画师图库（画师图库在独立 store，永不参与）。
+         * - clearAll + keep=n：按 createdAt 保留最近 n 张，其余删除。
+         * - clearAll + includeProtected=true：pinned 也参与清理（仍按 keep 保留最近 n 张）。
          * 同步删 SLOT_IMAGE_CACHE 中指向被删图的行，并 revoke object URL。
          * @param {number} limit 整数 ≥1，clearAll 时忽略
-         * @param {{ clearAll?: boolean }} [opts]
-         * @returns {Promise<import('../../infra/result.js').Ok<{ removed: number, removedRefs: string[] }>|import('../../infra/result.js').Err<import('../../infra/errors.js').AppError>>}
+         * @param {{ clearAll?: boolean, keep?: number, includeProtected?: boolean }} [opts]
+         * @returns {Promise<import('../../infra/result.js').Ok<{ removed: number, removedRefs: string[], keep: number }>|import('../../infra/result.js').Err<import('../../infra/errors.js').AppError>>}
          */
         async trimToLimit(limit, opts) {
             const clearAll = opts?.clearAll === true;
-            const n = clearAll ? 0 : Number(limit);
+            const includeProtected = clearAll && opts?.includeProtected === true;
+            const rawKeep = Number(opts?.keep);
+            const keep = clearAll && Number.isInteger(rawKeep) && rawKeep > 0 ? rawKeep : 0;
+            const n = clearAll ? keep : Number(limit);
             if (!clearAll && (!Number.isInteger(n) || n < 1)) {
                 return Err(configError({
                     code: 'IMAGE_CACHE_LIMIT',
@@ -391,9 +431,10 @@ export function createImageRepo(deps) {
                 }));
             }
             return catchToResult(async () => {
-                const all = (await db.getAll(IDB_STORES.IMAGES)).filter((row) => row?.pinned !== true);
+                const all = (await db.getAll(IDB_STORES.IMAGES))
+                    .filter((row) => includeProtected || row?.pinned !== true);
                 if (all.length <= n) {
-                    return { removed: 0, removedRefs: /** @type {string[]} */ ([]) };
+                    return { removed: 0, removedRefs: /** @type {string[]} */ ([]), keep: n };
                 }
                 const sorted = [...all].sort((a, b) => {
                     const ca = String(a?.createdAt ?? '');
@@ -422,8 +463,16 @@ export function createImageRepo(deps) {
                         await db.delete(IDB_STORES.SLOT_IMAGE_CACHE, [row.sessionId, row.slotId]);
                     }
                 }
-                return { removed: removedRefs.length, removedRefs };
+                return { removed: removedRefs.length, removedRefs, keep: n };
             }, mapErr, Ok, Err);
+        },
+
+        /** 只撤销指定图片的 objectURL（不删 blob），供面板翻页/关闭时释放内存。 */
+        releaseUrl(ref) {
+            if (ref == null || ref === '') {
+                return;
+            }
+            revokeCached(String(ref));
         },
 
         revokeAllUrls() {

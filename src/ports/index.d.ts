@@ -352,6 +352,8 @@ export interface SlotRepository {
 export interface ImageRepository {
     put(blob: Blob): Promise<Result<ImageRef>>;
     getUrl(ref: ImageRef): Promise<Result<string | null>>;
+    /** 仅撤销该图片的 objectURL，不删除 blob；可选能力，用于面板翻页/关闭时释放内存。 */
+    releaseUrl?(ref: ImageRef): void;
     /**
      * liveRefs 必须覆盖全部 swipe（extra + swipe_info[].extra）。
      * 空/非数组 → Err；清空须 opts.force === true（D22/D23）。

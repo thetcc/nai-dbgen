@@ -499,7 +499,7 @@ describe('image repo D22 / slot cache', () => {
             const cache = await db.getAll(IDB_STORES.SLOT_IMAGE_CACHE);
             assert.deepEqual(cache.map((row) => row.imageRef).sort(), ['artist', 'pinned']);
             const again = await images.trimToLimit(0, { clearAll: true });
-            assert.deepEqual(again.value, { removed: 0, removedRefs: [] });
+            assert.deepEqual(again.value, { removed: 0, removedRefs: [], keep: 0 });
         } finally {
             globalThis.URL = originalURL;
         }
@@ -514,9 +514,93 @@ describe('image repo D22 / slot cache', () => {
         }
         await images.put(blob, { id: 'artist' });
         const r = await images.trimToLimit(1);
-        assert.deepEqual(r.value, { removed: 1, removedRefs: ['a'] });
+        assert.deepEqual(r.value, { removed: 1, removedRefs: ['a'], keep: 1 });
         assert.deepEqual((await db.getAll(IDB_STORES.IMAGES)).map((row) => row.id).sort(), ['b', 'p']);
         assert.ok((await images.getBlob('artist')).value);
+    });
+
+    it('clearAll + keep 保留最近 N 张，其余删除', async () => {
+        const db = createMemoryIdb();
+        const images = createImageRepo({ db });
+        const blob = new Blob(['x']);
+        for (const id of ['a', 'b', 'c', 'd']) {
+            await db.put(IDB_STORES.IMAGES, { id, blob, createdAt: `2026-01-01T00:00:0${id}`, pinned: false });
+        }
+        const r = await images.trimToLimit(0, { clearAll: true, keep: 2 });
+        assert.equal(r.value.removed, 2);
+        assert.deepEqual([...r.value.removedRefs].sort(), ['a', 'b']);
+        assert.deepEqual((await db.getAll(IDB_STORES.IMAGES)).map((row) => row.id).sort(), ['c', 'd']);
+    });
+
+    it('includeProtected 让 pinned 参与清理，仍按 keep 保留最新', async () => {
+        const db = createMemoryIdb();
+        const images = createImageRepo({ db });
+        const blob = new Blob(['x']);
+        await db.put(IDB_STORES.IMAGES, { id: 'a', blob, createdAt: '1', pinned: false });
+        await db.put(IDB_STORES.IMAGES, { id: 'b', blob, createdAt: '2', pinned: true });
+        await db.put(IDB_STORES.IMAGES, { id: 'c', blob, createdAt: '3', pinned: true });
+
+        const guarded = await images.trimToLimit(0, { clearAll: true, keep: 1 });
+        assert.equal(guarded.value.removed, 0, '默认不动 pinned，且 keep 只统计可清理图片');
+
+        const forced = await images.trimToLimit(0, { clearAll: true, keep: 1, includeProtected: true });
+        assert.deepEqual([...forced.value.removedRefs].sort(), ['a', 'b']);
+        assert.deepEqual((await db.getAll(IDB_STORES.IMAGES)).map((row) => row.id), ['c']);
+    });
+
+    it('展示 URL 缓存有上限，超出后撤销最久未用的', async () => {
+        const db = createMemoryIdb();
+        const images = createImageRepo({ db, maxCachedUrls: 2 });
+        const blob = new Blob(['x']);
+        for (const id of ['a', 'b', 'c']) {
+            await db.put(IDB_STORES.IMAGES, { id, blob, createdAt: id, pinned: false });
+        }
+        const originalURL = globalThis.URL;
+        /** @type {string[]} */
+        const revoked = [];
+        let seq = 0;
+        globalThis.URL = {
+            createObjectURL: () => `blob:${++seq}`,
+            revokeObjectURL: (url) => revoked.push(url),
+        };
+        try {
+            const a1 = (await images.getUrl('a')).value;
+            const b1 = (await images.getUrl('b')).value;
+            const a2 = (await images.getUrl('a')).value;
+            assert.equal(a1, a2, '命中缓存不重建');
+            const c1 = (await images.getUrl('c')).value;
+            assert.ok(c1);
+            assert.deepEqual(revoked, [b1], '超上限时撤销最久未用的 b');
+            assert.equal((await images.getUrl('a')).value, a1, 'a 刚被访问过，仍在缓存');
+        } finally {
+            globalThis.URL = originalURL;
+        }
+    });
+
+    it('releaseUrl 只撤销 objectURL，不删 blob', async () => {
+        const db = createMemoryIdb();
+        const images = createImageRepo({ db });
+        const blob = new Blob(['x']);
+        await images.put(blob);
+        const id = (await images.listMeta()).value[0].id;
+        const originalURL = globalThis.URL;
+        /** @type {string[]} */
+        const revoked = [];
+        let seq = 0;
+        globalThis.URL = {
+            createObjectURL: () => `blob:${++seq}`,
+            revokeObjectURL: (url) => revoked.push(url),
+        };
+        try {
+            const before = (await images.getUrl(id)).value;
+            images.releaseUrl(id);
+            assert.deepEqual(revoked, [before]);
+            assert.ok((await images.getBlob(id)).value, 'blob 仍保留');
+            const after = (await images.getUrl(id)).value;
+            assert.notEqual(after, before, '释放后可重新创建 URL');
+        } finally {
+            globalThis.URL = originalURL;
+        }
     });
 
     it('trimToLimit rejects non-positive limit', async () => {

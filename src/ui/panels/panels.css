@@ -899,6 +899,19 @@
 :is(#nai-dbgen-root, .nd-root) .nd-cache-card__cap { padding-right: 92px; }
 :is(#nai-dbgen-root, .nd-root) .nd-cache-card__reuse:disabled { opacity: .5; }
 
+/* 图库分页：每页最多 30 张，翻页即释放上一页 objectURL。 */
+:is(#nai-dbgen-root, .nd-root) .nd-cache-pager {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-top: 12px;
+}
+:is(#nai-dbgen-root, .nd-root) .nd-cache-pager[hidden] { display: none !important; }
+:is(#nai-dbgen-root, .nd-root) .nd-cache-pager span {
+    font-size: var(--nd-fs-sm);
+    color: var(--nd-muted);
+}
+
 /* 常规设置 · 快速配置悬浮窗内容显隐器：整组一张卡片，行间只用分隔线 */
 :is(#nai-dbgen-root, .nd-root) .nd-quick-vis {
     display: grid;

@@ -46,6 +46,17 @@ function findButtons(root) {
 }
 
 /**
+ * @param {object} node
+ * @param {string} type
+ */
+function fire(node, type) {
+    const ev = { preventDefault() {}, stopPropagation() {} };
+    for (const l of (node._listeners || []).filter((x) => x.type === type)) {
+        l.fn(ev);
+    }
+}
+
+/**
  * @param {object} btn
  */
 function click(btn) {
@@ -96,7 +107,7 @@ describe('storage-panel image cache', () => {
                 },
                 imageCacheTrim: {
                     trim: async (opts) => {
-                        assert.deepEqual(opts, { clearAll: true });
+                        assert.deepEqual(opts, { clearAll: true, keep: 0, includeProtected: false });
                         trimmed = true;
                         return Ok({ removed: 2, removedRefs: ['a', 'b'], limit: 0 });
                     },
@@ -135,7 +146,7 @@ describe('storage-panel image cache', () => {
         assert.equal(saves, 0);
         assert.equal(estimates, 2);
         assert.equal(trimBtn.disabled, false);
-        assert.ok(toasts.some((t) => String(t.message).includes('已清理 2 张本地缓存图片')));
+        assert.ok(toasts.some((t) => String(t.message).includes('已清理 2 张图片缓存')));
 
         handle.destroy();
     });
@@ -217,6 +228,87 @@ describe('storage-panel image cache', () => {
         await new Promise((r) => setTimeout(r, 0));
         assert.equal(trimBtn.disabled, false);
         assert.ok(toasts.some((t) => t.level === 'error' && String(t.message).includes('磁盘只读')));
+        handle.destroy();
+    });
+
+    it('图库每页最多 30 张，翻页释放上一页 URL', async () => {
+        const root = document.createElement('div');
+        document.body.appendChild(root);
+        const total = 45;
+        const metas = Array.from({ length: total }, (_, i) => ({
+            id: `img${i}`,
+            size: 1024,
+            createdAt: `2026-01-01T00:00:${String(i).padStart(2, '0')}`,
+            pinned: false,
+            mimeType: 'image/png',
+        }));
+        /** @type {string[]} */
+        const released = [];
+        const handle = mountStoragePanel(root, {
+            host: { toast: () => {}, loadSettings: () => ({ imageCacheLimit: 500 }), saveSettings: () => {} },
+            services: { imageCacheTrim: { trim: async () => Ok({ removed: 0, removedRefs: [], limit: 0 }) } },
+            repos: {
+                image: {
+                    estimateUsage: async () => Ok({ bytes: total * 1024, count: total, quota: null, usage: null }),
+                    listMeta: async () => Ok(metas),
+                    getUrl: async (id) => Ok(`blob:${id}`),
+                    getBlob: async () => Ok(new Blob(['x'], { type: 'image/png' })),
+                    releaseUrl: (id) => released.push(String(id)),
+                },
+            },
+        });
+        await new Promise((r) => setTimeout(r, 10));
+
+        assert.equal(findAllByClass(root, 'nd-cache-card').length, 30, '首屏最多渲染 30 张');
+        const pagerInfo = findAllByClass(root, 'nd-cache-pager')[0]?.querySelector('span');
+        assert.match(String(pagerInfo.textContent || ''), /第 1 \/ 2 页/);
+
+        const next = findButtons(root).find((b) => String(b.textContent || '') === '下一页');
+        click(next);
+        await new Promise((r) => setTimeout(r, 10));
+
+        assert.equal(findAllByClass(root, 'nd-cache-card').length, 15, '第二页只剩 15 张');
+        assert.equal(released.length, 30, '翻页时释放上一页 30 个 URL');
+        assert.match(String(pagerInfo.textContent || ''), /第 2 \/ 2 页/);
+        assert.equal(next.disabled, true);
+
+        handle.destroy();
+        assert.equal(released.length, 45, '关闭面板释放当前页 URL');
+    });
+
+    it('清理选项把保留张数与受保护开关传给服务', async () => {
+        const root = document.createElement('div');
+        document.body.appendChild(root);
+        /** @type {object[]} */
+        const calls = [];
+        const handle = mountStoragePanel(root, {
+            host: { toast: () => {}, loadSettings: () => ({ imageCacheLimit: 500 }), saveSettings: () => {} },
+            services: {
+                imageCacheTrim: {
+                    trim: async (opts) => {
+                        calls.push(opts);
+                        return Ok({ removed: 4, removedRefs: [], limit: 0 });
+                    },
+                },
+            },
+        });
+        await new Promise((r) => setTimeout(r, 0));
+
+        const inputs = root.querySelectorAll('input');
+        inputs[1].value = '10';
+        inputs[2].checked = true;
+        fire(inputs[2], 'change');
+
+        const trimBtn = findButtons(root).find((b) => String(b.textContent || '').includes('清理图片缓存'));
+        click(trimBtn);
+        await new Promise((r) => setTimeout(r, 0));
+        const confirmation = findAllByClass(document.body, 'nd-confirm')[0];
+        assert.match(confirmation.querySelector('p').textContent, /保留最近 10 张/);
+        assert.match(confirmation.querySelector('p').textContent, /受保护图片/);
+        click(findButtons(confirmation).find((b) => b.textContent === '确认删除'));
+        await new Promise((r) => setTimeout(r, 0));
+
+        assert.deepEqual(calls, [{ clearAll: true, keep: 10, includeProtected: true }]);
         handle.destroy();
     });
 });

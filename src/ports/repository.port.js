@@ -135,6 +135,8 @@ import { requireArg } from '../infra/validate.js';
  * @property {(blob: Blob) => Promise<import('../infra/result.js').Ok<ImageRef>|import('../infra/result.js').Err<import('../infra/errors.js').AppError>>} put
  * @property {(ref: ImageRef) => Promise<import('../infra/result.js').Ok<string|null>|import('../infra/result.js').Err<import('../infra/errors.js').AppError>>} getUrl
  *   返回可展示的 object URL（或 null）。
+ * @property {(ref: ImageRef) => void} [releaseUrl]
+ *   只撤销该 ref 的 objectURL（不删 blob）；面板翻页/关闭时用来及时释放内存。可选能力。
  * @property {(liveRefs: ImageRef[], opts?: { force?: boolean }) => Promise<import('../infra/result.js').Ok<{ removed: number }>|import('../infra/result.js').Err<import('../infra/errors.js').AppError>>} gc
  *   删除不在 `liveRefs` 中的 blob。
  *
