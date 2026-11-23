@@ -1,6 +1,7 @@
 /**
- * L4 应用层 · 图片缓存按张数上限裁剪（需求 4.17）。
- * 读常规设置上限 → imageRepo.trimToLimit → 通知 UI。
+ * L4 应用层 · 图片缓存裁剪（需求 4.17）。
+ * 默认（启动自动裁剪）：读常规设置上限 → imageRepo.trimToLimit → 通知 UI。
+ * 手动清理传 { clearAll: true }：忽略上限清空可清理图片，pinned 与画师图库仍保留。
  */
 
 import { Ok, isErr } from '../infra/result.js';
@@ -19,9 +20,9 @@ const DEFAULT_IMAGE_CACHE_LIMIT = 500;
 /**
  * @param {object} deps
  * @param {() => { imageCacheLimit?: number }} deps.loadSettings
- * @param {{ trimToLimit: (limit: number) => Promise<import('../infra/result.js').Ok<{ removed: number, removedRefs: string[] }>|import('../infra/result.js').Err<import('../infra/errors.js').AppError>> }} deps.imageRepo
+ * @param {{ trimToLimit: (limit: number, opts?: { clearAll?: boolean }) => Promise<import('../infra/result.js').Ok<{ removed: number, removedRefs: string[] }>|import('../infra/result.js').Err<import('../infra/errors.js').AppError>> }} deps.imageRepo
  * @param {{ emit: (type: string, payload?: unknown) => void }} [deps.bus]
- * @returns {{ trim: () => Promise<import('../infra/result.js').Ok<ImageCacheTrimResult>|import('../infra/result.js').Err<import('../infra/errors.js').AppError>> }}
+ * @returns {{ trim: (opts?: { clearAll?: boolean }) => Promise<import('../infra/result.js').Ok<ImageCacheTrimResult>|import('../infra/result.js').Err<import('../infra/errors.js').AppError>> }}
  */
 export function createImageCacheTrimService(deps) {
     const loadSettings = deps?.loadSettings;
@@ -35,19 +36,24 @@ export function createImageCacheTrimService(deps) {
     }
 
     return {
-        async trim() {
-            let limit = DEFAULT_IMAGE_CACHE_LIMIT;
-            try {
-                const settings = loadSettings();
-                const raw = settings?.imageCacheLimit;
-                if (Number.isInteger(raw) && raw >= 1) {
-                    limit = raw;
+        async trim(opts) {
+            const clearAll = opts?.clearAll === true;
+            let limit = clearAll ? 0 : DEFAULT_IMAGE_CACHE_LIMIT;
+            if (!clearAll) {
+                try {
+                    const settings = loadSettings();
+                    const raw = settings?.imageCacheLimit;
+                    if (Number.isInteger(raw) && raw >= 1) {
+                        limit = raw;
+                    }
+                } catch {
+                    // 读设置失败时用默认上限继续裁剪
                 }
-            } catch {
-                // 读设置失败时用默认上限继续裁剪
             }
 
-            const r = await imageRepo.trimToLimit(limit);
+            const r = clearAll
+                ? await imageRepo.trimToLimit(limit, { clearAll: true })
+                : await imageRepo.trimToLimit(limit);
             if (isErr(r)) {
                 return r;
             }

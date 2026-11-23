@@ -76,13 +76,15 @@ describe('storage-panel image cache', () => {
         /** @type {object[]} */
         const toasts = [];
         let trimmed = false;
+        let saves = 0;
+        let estimates = 0;
         const handle = mountStoragePanel(root, {
             host: {
                 toast: (level, message) => {
                     toasts.push({ level, message });
                 },
-                loadSettings: () => ({ imageCacheLimit: 3 }),
-                saveSettings: () => {},
+                loadSettings: () => ({ imageCacheLimit: 500 }),
+                saveSettings: () => { saves += 1; },
             },
             services: {
                 storageCleanup: {
@@ -93,17 +95,19 @@ describe('storage-panel image cache', () => {
                     }),
                 },
                 imageCacheTrim: {
-                    trim: async () => {
+                    trim: async (opts) => {
+                        assert.deepEqual(opts, { clearAll: true });
                         trimmed = true;
-                        return Ok({ removed: 2, removedRefs: ['a', 'b'], limit: 3 });
+                        return Ok({ removed: 2, removedRefs: ['a', 'b'], limit: 0 });
                     },
                 },
             },
             repos: {
                 image: {
-                    estimateUsage: async () => Ok({
-                        bytes: 2048, count: 5, quota: null, usage: null,
-                    }),
+                    estimateUsage: async () => {
+                        estimates += 1;
+                        return Ok({ bytes: 2048, count: 5, quota: null, usage: null });
+                    },
                 },
             },
         });
@@ -116,11 +120,60 @@ describe('storage-panel image cache', () => {
 
         const trimBtn = findButtons(root).find((b) => String(b.textContent || '').includes('清理图片缓存'));
         assert.ok(trimBtn);
+        const input = root.querySelector('input');
+        input.value = '0';
         click(trimBtn);
         await new Promise((r) => setTimeout(r, 0));
+        assert.equal(trimmed, false);
+        assert.equal(trimBtn.disabled, true);
+        const confirmation = findAllByClass(document.body, 'nd-confirm')[0];
+        assert.ok(confirmation);
+        assert.match(confirmation.querySelector('p').textContent, /不受缓存上限限制/);
+        click(findButtons(confirmation).find((b) => b.textContent === '确认删除'));
+        await new Promise((r) => setTimeout(r, 0));
         assert.equal(trimmed, true);
-        assert.ok(toasts.some((t) => String(t.message).includes('2')));
+        assert.equal(saves, 0);
+        assert.equal(estimates, 2);
+        assert.equal(trimBtn.disabled, false);
+        assert.ok(toasts.some((t) => String(t.message).includes('已清理 2 张本地缓存图片')));
 
+        handle.destroy();
+    });
+
+    it('取消确认不清理；再次确认零张时显示无可清理缓存', async () => {
+        const root = document.createElement('div');
+        document.body.appendChild(root);
+        let trims = 0;
+        let saves = 0;
+        const toasts = [];
+        const handle = mountStoragePanel(root, {
+            host: {
+                loadSettings: () => ({ imageCacheLimit: 500 }),
+                saveSettings: () => { saves += 1; },
+                toast: (level, message) => toasts.push({ level, message }),
+            },
+            services: { imageCacheTrim: { trim: async () => {
+                trims += 1;
+                return Ok({ removed: 0, removedRefs: [], limit: 0 });
+            } } },
+        });
+        const button = findButtons(root).find((b) => b.textContent === '清理图片缓存');
+        click(button);
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        let confirmation = findAllByClass(document.body, 'nd-confirm')[0];
+        click(findButtons(confirmation).find((b) => b.textContent === '取消'));
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        assert.equal(trims, 0);
+        assert.equal(saves, 0);
+        assert.equal(button.disabled, false);
+        assert.deepEqual(toasts, []);
+        click(button);
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        confirmation = findAllByClass(document.body, 'nd-confirm')[0];
+        click(findButtons(confirmation).find((b) => b.textContent === '确认删除'));
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        assert.equal(trims, 1);
+        assert.ok(toasts.some((t) => t.level === 'info' && t.message.includes('没有可清理的图片缓存')));
         handle.destroy();
     });
 
@@ -159,6 +212,10 @@ describe('storage-panel image cache', () => {
         assert.ok(trimBtn);
         click(trimBtn);
         await new Promise((r) => setTimeout(r, 0));
+        const confirmation = findAllByClass(document.body, 'nd-confirm')[0];
+        click(findButtons(confirmation).find((b) => b.textContent === '确认删除'));
+        await new Promise((r) => setTimeout(r, 0));
+        assert.equal(trimBtn.disabled, false);
         assert.ok(toasts.some((t) => t.level === 'error' && String(t.message).includes('磁盘只读')));
         handle.destroy();
     });

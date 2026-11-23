@@ -50,7 +50,7 @@ export function collectLiveRefsFromRecords(records) {
  *   getSlotImageRef: (sessionId: string, slotId: number) => Promise<import('../../infra/result.js').Ok<string|null>|import('../../infra/result.js').Err<import('../../infra/errors.js').AppError>>,
  *   listCacheRefs: (sessionId?: string|null) => Promise<import('../../infra/result.js').Ok<string[]>|import('../../infra/result.js').Err<import('../../infra/errors.js').AppError>>,
  *   collectLiveRefs: (records: Iterable<object>, sessionId?: string|null) => Promise<import('../../infra/result.js').Ok<string[]>|import('../../infra/result.js').Err<import('../../infra/errors.js').AppError>>,
- *   trimToLimit: (limit: number) => Promise<import('../../infra/result.js').Ok<{ removed: number, removedRefs: string[] }>|import('../../infra/result.js').Err<import('../../infra/errors.js').AppError>>,
+ *   trimToLimit: (limit: number, opts?: { clearAll?: boolean }) => Promise<import('../../infra/result.js').Ok<{ removed: number, removedRefs: string[] }>|import('../../infra/result.js').Err<import('../../infra/errors.js').AppError>>,
  * }}
  */
 export function createImageRepo(deps) {
@@ -375,14 +375,16 @@ export function createImageRepo(deps) {
         },
 
         /**
-         * 按张数上限裁剪：全部图按 createdAt 从老到新，删掉超出上限的最老部分。
+         * 按张数上限裁剪公共图片；clearAll 时清空可清理图片，始终保护 pinned 和画师图库。
          * 同步删 SLOT_IMAGE_CACHE 中指向被删图的行，并 revoke object URL。
-         * @param {number} limit 整数 ≥1
+         * @param {number} limit 整数 ≥1，clearAll 时忽略
+         * @param {{ clearAll?: boolean }} [opts]
          * @returns {Promise<import('../../infra/result.js').Ok<{ removed: number, removedRefs: string[] }>|import('../../infra/result.js').Err<import('../../infra/errors.js').AppError>>}
          */
-        async trimToLimit(limit) {
-            const n = Number(limit);
-            if (!Number.isInteger(n) || n < 1) {
+        async trimToLimit(limit, opts) {
+            const clearAll = opts?.clearAll === true;
+            const n = clearAll ? 0 : Number(limit);
+            if (!clearAll && (!Number.isInteger(n) || n < 1)) {
                 return Err(configError({
                     code: 'IMAGE_CACHE_LIMIT',
                     message: '图片缓存上限必须是 ≥1 的整数',

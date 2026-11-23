@@ -466,6 +466,59 @@ describe('image repo D22 / slot cache', () => {
         assert.ok(await db.get(IDB_STORES.SLOT_IMAGE_CACHE, ['sess-c', 3]));
     });
 
+    it('显式清空删除所有公共图片，保留保护图、画师图及其 URL 和索引', async () => {
+        const db = createMemoryIdb();
+        const images = createImageRepo({ db });
+        const blob = new Blob(['x'], { type: 'image/png' });
+        for (const id of ['old', 'new', 'pinned']) {
+            await db.put(IDB_STORES.IMAGES, { id, blob, createdAt: id, pinned: id === 'pinned' });
+        }
+        await images.put(blob, { id: 'artist' });
+        const refs = ['old', 'new', 'pinned', 'artist'];
+        for (const [i, ref] of refs.entries()) await images.linkSlot('s', i + 1, ref);
+        await images.linkSlot('other', 1, 'old');
+        const originalURL = globalThis.URL;
+        const revoked = [];
+        globalThis.URL = {
+            createObjectURL: () => `blob:${refs.shift()}`,
+            revokeObjectURL: (url) => revoked.push(url),
+        };
+        try {
+            for (const ref of ['old', 'new', 'pinned', 'artist']) await images.getUrl(ref);
+            const r = await images.trimToLimit(500, { clearAll: true });
+            assert.equal(isOk(r), true);
+            assert.equal(r.value.removed, 2);
+            assert.deepEqual([...r.value.removedRefs].sort(), ['new', 'old']);
+            assert.deepEqual([...revoked].sort(), ['blob:new', 'blob:old']);
+            assert.equal((await images.getBlob('old')).value, null);
+            assert.equal((await images.getUrl('new')).value, null);
+            assert.deepEqual((await db.getAll(IDB_STORES.IMAGES)).map((row) => row.id), ['pinned']);
+            assert.ok((await images.getBlob('artist')).value);
+            assert.equal((await images.getUrl('pinned')).value, 'blob:pinned');
+            assert.equal((await images.getUrl('artist')).value, 'blob:artist');
+            const cache = await db.getAll(IDB_STORES.SLOT_IMAGE_CACHE);
+            assert.deepEqual(cache.map((row) => row.imageRef).sort(), ['artist', 'pinned']);
+            const again = await images.trimToLimit(0, { clearAll: true });
+            assert.deepEqual(again.value, { removed: 0, removedRefs: [] });
+        } finally {
+            globalThis.URL = originalURL;
+        }
+    });
+
+    it('自动裁剪不计入或删除保护图和画师图库', async () => {
+        const db = createMemoryIdb();
+        const images = createImageRepo({ db });
+        const blob = new Blob(['x']);
+        for (const [id, pinned] of [['a', false], ['b', false], ['p', true]]) {
+            await db.put(IDB_STORES.IMAGES, { id, blob, createdAt: id, pinned });
+        }
+        await images.put(blob, { id: 'artist' });
+        const r = await images.trimToLimit(1);
+        assert.deepEqual(r.value, { removed: 1, removedRefs: ['a'] });
+        assert.deepEqual((await db.getAll(IDB_STORES.IMAGES)).map((row) => row.id).sort(), ['b', 'p']);
+        assert.ok((await images.getBlob('artist')).value);
+    });
+
     it('trimToLimit rejects non-positive limit', async () => {
         const db = createMemoryIdb();
         const images = createImageRepo({ db });

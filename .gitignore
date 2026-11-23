@@ -3,6 +3,7 @@ node_modules/
 *.log
 __pycache__/
 *.pyc
+.workbuddy/
 preview/live-api.local.json
 preview/last-imagegen-prompts.txt
 preview/trace_*.json
