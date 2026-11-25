@@ -102,6 +102,8 @@ export function installFakeDom() {
             this.alt = '';
             this.src = '';
             this.id = '';
+            this.scrollLeft = 0;
+            this.scrollWidth = 0;
 
             const self = this;
             this.classList = {
@@ -182,6 +184,21 @@ export function installFakeDom() {
          */
         getAttribute(k) {
             return this.attributes.has(k) ? this.attributes.get(k) : null;
+        }
+
+        /**
+         * @param {string} k
+         */
+        removeAttribute(k) {
+            this.attributes.delete(k);
+        }
+
+        /**
+         * 布局桩：测试环境没有排版引擎，统一返回零矩形。
+         * @returns {{left:number,right:number,top:number,bottom:number,width:number,height:number}}
+         */
+        getBoundingClientRect() {
+            return { left: 0, right: 0, top: 0, bottom: 0, width: 0, height: 0 };
         }
 
         /**

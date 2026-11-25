@@ -27,6 +27,13 @@ export function buildImageViewerElement(safeUrl, alt) {
 }
 
 /**
+ * 缩略图按需加载：只为当前图前后各 THUMB_WINDOW 张解析 URL，
+ * 其余保持空白占位（滚到附近时再由 IntersectionObserver 补上）。
+ * 这样即使历史有 500 张，同时驻留的 objectURL 也只有十几条。
+ */
+const THUMB_WINDOW = 5;
+
+/**
  * 打开大图。URL 未过白名单则返回 null（不弹窗）。
  * @param {object} deps
  * @param {import('../../ports/host.port.js').HostPort} [deps.host]
@@ -41,18 +48,34 @@ export async function openSlotImageViewer(_deps, opts) {
         ? opts.images
         : [{ url: opts?.url, alt: opts?.alt }];
     const ownedSourceUrls = [];
-    const resolved = await Promise.all(sources.map(async (item, sourceIndex) => {
-        try {
-            const url = item.blob instanceof Blob
-                ? (() => { const created = URL.createObjectURL(item.blob); ownedSourceUrls.push(created); return created; })()
-                : item.url ?? await opts?.getImageUrl?.(item.imageRef);
-            const safe = safeImageUrl(url);
-            return safe ? { ...item, url: safe, sourceIndex } : null;
-        } catch {
-            return null;
+    /** @type {Array<object>} 只保留可展示的项；仅有 imageRef 的项在需要时再解析 URL */
+    const images = [];
+    sources.forEach((item, sourceIndex) => {
+        /** @type {Record<string, unknown>} */
+        const entry = { ...item, sourceIndex, url: null };
+        if (item?.blob instanceof Blob) {
+            try {
+                const created = URL.createObjectURL(item.blob);
+                ownedSourceUrls.push(created);
+                entry.url = created;
+            } catch {
+                entry.url = null;
+            }
+        } else if (item?.url) {
+            entry.url = item.url;
         }
-    }));
-    const images = resolved.filter(Boolean);
+        if (entry.url) {
+            const safe = safeImageUrl(entry.url);
+            if (!safe) return;
+            entry.url = safe;
+            images.push(entry);
+            return;
+        }
+        // 没有现成 URL，但有 imageRef 时可稍后按需解析（历史列表走这条路径）
+        if (item?.imageRef != null && typeof opts?.getImageUrl === 'function') {
+            images.push(entry);
+        }
+    });
     if (!images.length) return null;
     let index = images.findIndex((item) => item.sourceIndex === opts?.initialIndex);
     if (index < 0) index = images.length - 1;
@@ -87,18 +110,109 @@ export async function openSlotImageViewer(_deps, opts) {
     const previous = button('‹', '上一张', () => select(index - 1));
     const next = button('›', '下一张', () => select(index + 1));
     const closeButton = button('×', '关闭图片历史', () => close());
-    const thumbs = images.map((item, i) => {
+    let closed = false;
+    let selectSequence = 0;
+
+    /** @type {HTMLImageElement[]} */
+    const thumbPreviews = [];
+    const thumbs = images.map((_item, i) => {
         const thumb = button('', `历史图片 ${i + 1}`, () => select(i));
         thumb.className = 'nd-image-only__thumbnail';
         const preview = document.createElement('img');
-        preview.src = item.url;
         preview.alt = '';
         preview.loading = 'lazy';
+        thumbPreviews[i] = preview;
         thumb.appendChild(preview);
         strip.appendChild(thumb);
         return thumb;
     });
-    let closed = false;
+
+    /** @type {Map<number, Promise<string|null>>} 同一张的并发解析只发一次请求 */
+    const pendingUrl = new Map();
+
+    /**
+     * 按需解析第 i 张的 URL。已有 URL 直接复用；仅有 imageRef 时走 getImageUrl。
+     * @param {number} i
+     * @returns {Promise<string|null>}
+     */
+    function resolveAt(i) {
+        const item = images[i];
+        if (!item) return Promise.resolve(null);
+        if (item.url) return Promise.resolve(item.url);
+        if (item.imageRef == null || typeof opts?.getImageUrl !== 'function') return Promise.resolve(null);
+        const inflight = pendingUrl.get(i);
+        if (inflight) return inflight;
+        const task = (async () => {
+            try {
+                const safe = safeImageUrl(await opts.getImageUrl(item.imageRef));
+                if (safe) item.url = safe;
+                return safe;
+            } catch {
+                return null;
+            } finally {
+                pendingUrl.delete(i);
+            }
+        })();
+        pendingUrl.set(i, task);
+        return task;
+    }
+
+    /** @type {('idle'|'loading'|'loaded'|'failed')[]} 缩略图加载状态，避免重复解析 */
+    const thumbState = images.map(() => 'idle');
+
+    /** 让第 i 个缩略图开始加载（已加载/加载中则跳过）。 */
+    function ensureThumb(i) {
+        const preview = thumbPreviews[i];
+        const item = images[i];
+        if (!preview || !item || thumbState[i] !== 'idle') return;
+        thumbState[i] = 'loading';
+        if (item.url) {
+            preview.src = item.url;
+            thumbState[i] = 'loaded';
+            return;
+        }
+        void resolveAt(i).then((url) => {
+            if (closed) return;
+            if (!url) {
+                thumbState[i] = 'failed';
+                return;
+            }
+            preview.src = url;
+            thumbState[i] = 'loaded';
+        });
+    }
+
+    /** 释放离当前图较远的缩略图，避免 500 张全部解码占内存。 */
+    function clearThumb(i) {
+        if (thumbState[i] !== 'loaded') return;
+        thumbState[i] = 'idle';
+        const preview = thumbPreviews[i];
+        if (!preview) return;
+        if (typeof preview.removeAttribute === 'function') preview.removeAttribute('src');
+        else preview.src = '';
+    }
+
+    /** 只保留当前图附近窗口内的缩略图加载，其余释放。 */
+    function syncThumbWindow() {
+        for (let i = 0; i < images.length; i += 1) {
+            if (Math.abs(i - index) <= THUMB_WINDOW) ensureThumb(i);
+            else clearThumb(i);
+        }
+    }
+
+    /** 横向滚动时，把进入视口的缩略图补上。 */
+    let thumbObserver = null;
+    if (typeof IntersectionObserver === 'function') {
+        thumbObserver = new IntersectionObserver((entries) => {
+            if (closed) return;
+            for (const entry of entries) {
+                if (!entry.isIntersecting) continue;
+                const i = thumbs.indexOf(entry.target);
+                if (i >= 0) ensureThumb(i);
+            }
+        }, { root: strip, rootMargin: '200px' });
+        for (const thumb of thumbs) thumbObserver.observe(thumb);
+    }
     let prepareSequence = 0;
     let preparedDownload = null;
     let down = null;
@@ -118,6 +232,7 @@ export async function openSlotImageViewer(_deps, opts) {
             let blob = item.blob;
             if (!(blob instanceof Blob) && item.imageRef && typeof opts?.getImageBlob === 'function') blob = await opts.getImageBlob(item.imageRef);
             if (!(blob instanceof Blob)) {
+                if (!item.url) throw new Error('读取图片失败');
                 const response = await fetch(item.url);
                 if (!response.ok) throw new Error('读取图片失败');
                 blob = await response.blob();
@@ -143,11 +258,20 @@ export async function openSlotImageViewer(_deps, opts) {
         else if (selected.right > visible.right) strip.scrollLeft += selected.right - visible.right;
     }
     function select(value, notify = true) {
+        return selectAsync(value, notify);
+    }
+
+    /**
+     * 切换当前图：先更新 UI，再按需解析 URL，避免打开时把 500 张全部解析。
+     * @param {number} value
+     * @param {boolean} [notify]
+     */
+    async function selectAsync(value, notify = true) {
         const previousIndex = index;
         index = Math.max(0, Math.min(images.length - 1, value));
-        img.src = images[index].url;
-        img.alt = String(images[index].alt || opts?.alt || `图片 ${index + 1}`);
-        error.hidden = true;
+        const sequence = ++selectSequence;
+        const item = images[index];
+        img.alt = String(item?.alt || opts?.alt || `图片 ${index + 1}`);
         count.textContent = `${index + 1} / ${images.length}`;
         previous.disabled = index === 0;
         next.disabled = index === images.length - 1;
@@ -156,12 +280,23 @@ export async function openSlotImageViewer(_deps, opts) {
             thumb.setAttribute('aria-current', i === index ? 'true' : 'false');
         });
         activateThumbnail();
-        void prepareDownload(images[index]);
+        syncThumbWindow();
+        void prepareDownload(item);
         if (notify && index !== previousIndex && typeof opts?.onSelect === 'function') {
-            Promise.resolve(opts.onSelect(images[index], images[index].sourceIndex)).catch(() => {
+            Promise.resolve(opts.onSelect(item, item?.sourceIndex)).catch(() => {
                 error.textContent = '无法更新外部预览'; error.hidden = false;
             });
         }
+        const url = await resolveAt(index);
+        if (closed || sequence !== selectSequence) return;
+        if (!url) {
+            if (typeof img.removeAttribute === 'function') img.removeAttribute('src');
+            error.textContent = '图片缓存已清理或不可用';
+            error.hidden = false;
+            return;
+        }
+        img.src = url;
+        error.hidden = true;
     }
     img.addEventListener('pointerdown', (event) => {
         if (event.isPrimary === false || (event.pointerType === 'mouse' && event.button !== 0)) { down = null; taps = []; return; }
@@ -186,13 +321,20 @@ export async function openSlotImageViewer(_deps, opts) {
     });
     toolbar.append(previous, count, next, closeButton);
     overlay.append(toolbar, strip, img, error);
-    select(index, false);
+    await select(index, false);
 
     function close() {
         if (closed) return;
         closed = true;
         prepareSequence += 1;
+        selectSequence += 1;
         revokePrepared(true);
+        try {
+            if (thumbObserver) thumbObserver.disconnect();
+        } catch {
+            // ignore
+        }
+        for (let i = 0; i < thumbPreviews.length; i += 1) clearThumb(i);
         for (const url of ownedSourceUrls) URL.revokeObjectURL(url);
         document.removeEventListener('keydown', onKey, true);
         try {

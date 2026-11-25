@@ -66,7 +66,8 @@ import {
 
 const WORKBENCH_DRAFT_KEY = 'nai-dbgen:workbench-draft';
 const MARKET_EXPANDED_KEY = 'nai-dbgen:market-expanded';
-const WORKBENCH_HISTORY_LIMIT = 50;
+/** 工作台历史保留张数：与图片缓存上限一致，默认保留最近 500 张（只在查看历史时按需取图）。 */
+const WORKBENCH_HISTORY_LIMIT = 500;
 
 /**
  * @returns {Record<string, unknown>|null}
@@ -2423,7 +2424,7 @@ export function mountWorkbench(root, deps) {
     const restoreReady = restorePreviews();
 
     /**
-     * 最近 50 张工作台历史钉住；只淘汰超过历史上限的工作台图片。
+     * 工作台历史按 WORKBENCH_HISTORY_LIMIT 钉住；只淘汰超过历史上限的工作台图片。
      * @param {Array<{ blob?: Blob, mimeType?: string }>} images
      */
     async function rememberPreviews(images) {
